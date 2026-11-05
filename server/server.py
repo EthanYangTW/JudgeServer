@@ -7,6 +7,8 @@ import uuid
 from flask import Flask, request, Response
 
 from compiler import Compiler
+from c_run import MAX_INPUT_BYTES, MAX_SOURCE_BYTES as RUN_MAX_SOURCE_BYTES, run_c_source
+from c_syntax import MAX_SOURCE_BYTES, run_c_syntax
 from config import (JUDGER_WORKSPACE_BASE, SPJ_SRC_DIR, SPJ_EXE_DIR, COMPILER_USER_UID, SPJ_USER_UID,
                     RUN_USER_UID, RUN_GROUP_GID, TEST_CASE_DIR)
 from exception import TokenVerificationFailed, CompileError, SPJCompileError, JudgeClientError
@@ -15,6 +17,7 @@ from utils import server_info, logger, token, ProblemIOMode
 
 app = Flask(__name__)
 DEBUG = os.environ.get("judger_debug") == "1"
+SYNTAX_ONLY = os.environ.get("FCU_SYNTAX_ONLY") == "1"
 app.debug = DEBUG
 
 
@@ -54,6 +57,49 @@ class JudgeServer:
         data = server_info()
         data["action"] = "pong"
         return data
+
+    @classmethod
+    def check_c_syntax(cls, src):
+        """Return C diagnostics without linking or executing student code."""
+        if not isinstance(src, str):
+            raise JudgeClientError("C source must be text")
+        try:
+            source_size = len(src.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise JudgeClientError("C source must be valid UTF-8")
+        if source_size > MAX_SOURCE_BYTES:
+            raise JudgeClientError("C source must be at most 16 KB")
+
+        with InitSubmissionEnv(JUDGER_WORKSPACE_BASE, submission_id=uuid.uuid4().hex) as dirs:
+            submission_dir, _ = dirs
+            source_path = os.path.join(submission_dir, "answer.c")
+            with open(source_path, "w", encoding="utf-8") as source_file:
+                source_file.write(src)
+            os.chown(source_path, COMPILER_USER_UID, 0)
+            os.chmod(source_path, 0o400)
+            return run_c_syntax(source_path, submission_dir)
+
+    @classmethod
+    def run_c(cls, src, input):
+        """Execute C with caller-supplied input, never with private grading cases."""
+        if not isinstance(src, str) or not isinstance(input, str):
+            raise JudgeClientError("C source and input must be text")
+        try:
+            source_size = len(src.encode("utf-8"))
+            input_size = len(input.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise JudgeClientError("C source and input must be valid UTF-8")
+        if source_size > RUN_MAX_SOURCE_BYTES or input_size > MAX_INPUT_BYTES:
+            raise JudgeClientError("C source or input exceeds the size limit")
+
+        with InitSubmissionEnv(JUDGER_WORKSPACE_BASE, submission_id=uuid.uuid4().hex) as dirs:
+            submission_dir, _ = dirs
+            source_path = os.path.join(submission_dir, "answer.c")
+            with open(source_path, "w", encoding="utf-8") as source_file:
+                source_file.write(src)
+            os.chown(source_path, COMPILER_USER_UID, 0)
+            os.chmod(source_path, 0o400)
+            return run_c_source(source_path, submission_dir, input)
 
     @classmethod
     def judge(cls, language_config, src, max_cpu_time, max_memory, test_case_id=None, test_case=None,
@@ -180,7 +226,8 @@ class JudgeServer:
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>', methods=["POST"])
 def server(path):
-    if path in ("judge", "ping", "compile_spj"):
+    if path == "ping" or (SYNTAX_ONLY and path in ("check_c_syntax", "run_c")) or \
+            (not SYNTAX_ONLY and path in ("judge", "compile_spj")):
         _token = request.headers.get("X-Judge-Server-Token")
         try:
             if _token != token:

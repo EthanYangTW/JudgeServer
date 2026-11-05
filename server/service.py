@@ -37,7 +37,12 @@ class JudgeService(object):
 
 if __name__ == "__main__":
     try:
-        if not os.environ.get("DISABLE_HEARTBEAT"):
+        if os.environ.get("FCU_SYNTAX_ONLY") == "1":
+            response = requests.post("http://127.0.0.1:8080/ping",
+                                     headers={"X-Judge-Server-Token": token}, timeout=3).json()
+            if response.get("err") or response.get("data", {}).get("action") != "pong":
+                raise JudgeServiceError("Syntax service health check failed")
+        elif not os.environ.get("DISABLE_HEARTBEAT"):
             service = JudgeService()
             service.heartbeat()
         exit(0)
