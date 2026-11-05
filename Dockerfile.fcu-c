@@ -30,6 +30,7 @@ COPY --from=builder /app/unbuffer.so /app/unbuffer.so
 RUN useradd -u 901 -r -s /usr/sbin/nologin -M compiler \
     && useradd -u 902 -r -s /usr/sbin/nologin -M code \
     && useradd -u 903 -r -s /usr/sbin/nologin -M -G code spj \
+    && sed -i 's/\r$//' /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh \
     && chmod -R u=rwX,go=rX /app
 HEALTHCHECK --interval=10s CMD ["/app/.venv/bin/python3", "/app/service.py"]
